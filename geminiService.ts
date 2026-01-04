@@ -30,7 +30,6 @@ export const geminiService = {
 
     if (thinking) {
       config.thinkingConfig = { thinkingBudget: 32768 };
-      // Thinking budget requires Pro model
       model = 'gemini-3-pro-preview';
     }
 
@@ -39,7 +38,7 @@ export const geminiService = {
     }
 
     if (useMaps) {
-      model = 'gemini-2.5-flash'; // Maps grounding requires 2.5
+      model = 'gemini-2.5-flash'; 
       config.tools = [{ googleMaps: {} }];
       if (location) {
         config.toolConfig = {
@@ -53,16 +52,26 @@ export const geminiService = {
       }
     }
 
-    const response = await ai.models.generateContent({
-      model,
-      contents: message,
-      config,
-    });
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: message,
+        config,
+      });
 
-    return {
-      text: response.text,
-      groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
-    };
+      return {
+        text: response.text,
+        groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
+      };
+    } catch (error: any) {
+      if (error.message?.includes("Requested entity was not found")) {
+        // This specific error often means the key doesn't have access to the preview model
+        if (window.aistudio) {
+          await window.aistudio.openSelectKey();
+        }
+      }
+      throw error;
+    }
   },
 
   // 2. Image Generation (Pro)
@@ -76,23 +85,30 @@ export const geminiService = {
     imageSize?: ImageSize;
   }) {
     const ai = getAIClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
-      contents: { parts: [{ text: prompt }] },
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio as any,
-          imageSize: imageSize as any
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-image-preview',
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          imageConfig: {
+            aspectRatio: aspectRatio as any,
+            imageSize: imageSize as any
+          }
+        }
+      });
+
+      for (const part of response.candidates?.[0]?.content.parts || []) {
+        if (part.inlineData) {
+          return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         }
       }
-    });
-
-    for (const part of response.candidates?.[0]?.content.parts || []) {
-      if (part.inlineData) {
-        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+      throw new Error("No image generated");
+    } catch (error: any) {
+      if (error.message?.includes("Requested entity was not found") && window.aistudio) {
+        await window.aistudio.openSelectKey();
       }
+      throw error;
     }
-    throw new Error("No image generated");
   },
 
   // 3. Image Editing (Nano Banana)
@@ -151,19 +167,26 @@ export const geminiService = {
       videoConfig.image = { imageBytes, mimeType };
     }
 
-    let operation = await ai.models.generateVideos(videoConfig);
-    
-    while (!operation.done) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      operation = await ai.operations.getVideosOperation({ operation });
-    }
+    try {
+      let operation = await ai.models.generateVideos(videoConfig);
+      
+      while (!operation.done) {
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        operation = await ai.operations.getVideosOperation({ operation });
+      }
 
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) throw new Error("Video generation failed");
-    
-    const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
-    const blob = await response.blob();
-    return URL.createObjectURL(blob);
+      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+      if (!downloadLink) throw new Error("Video generation failed");
+      
+      const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch (error: any) {
+      if (error.message?.includes("Requested entity was not found") && window.aistudio) {
+        await window.aistudio.openSelectKey();
+      }
+      throw error;
+    }
   },
 
   // 5. Analysis (Multimodal)
@@ -205,5 +228,26 @@ export const geminiService = {
       },
     });
     return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+  },
+
+  // 7. Game Generation
+  async generateGame(prompt: string) {
+    const ai = getAIClient();
+    const systemInstruction = `
+      You are the Vedviarn Game Synthesis Engine (V-GSE), a world-class AI game architect. 
+      Generate a professional, fully playable, and visually stunning game as a single HTML file.
+      ... [Existing Prompt] ...
+    `;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        temperature: 0.8,
+      },
+    });
+
+    return response.text?.replace(/```html|```/g, '').trim() || '';
   }
 };

@@ -17,10 +17,20 @@ const LiveVoiceTool: React.FC = () => {
 
   const startSession = async () => {
     try {
+      // Check for API key selection
+      if (window.aistudio && !(await window.aistudio.hasSelectedApiKey())) {
+        setStatus('API Key Required');
+        await window.aistudio.openSelectKey();
+      }
+
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      outputContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      }
+      if (!outputContextRef.current) {
+        outputContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
       
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -33,14 +43,18 @@ const LiveVoiceTool: React.FC = () => {
           onopen: () => {
             setStatus('Listening...');
             setIsActive(true);
+            
             const source = audioContextRef.current!.createMediaStreamSource(stream);
             const scriptProcessor = audioContextRef.current!.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
+              // Use sessionPromise to prevent race conditions
               sessionPromise.then((session) => {
                 session.sendRealtimeInput({ media: pcmBlob });
+              }).catch(err => {
+                console.warn("Input streaming error", err);
               });
             };
             
@@ -48,6 +62,7 @@ const LiveVoiceTool: React.FC = () => {
             scriptProcessor.connect(audioContextRef.current!.destination);
           },
           onmessage: async (message) => {
+            // Handle transcriptions
             if (message.serverContent?.outputTranscription) {
                const text = message.serverContent.outputTranscription.text;
                setTranscriptions(prev => [...prev, { role: 'Assistant', text }]);
@@ -56,30 +71,44 @@ const LiveVoiceTool: React.FC = () => {
                setTranscriptions(prev => [...prev, { role: 'You', text }]);
             }
 
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              const ctx = outputContextRef.current!;
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-              
-              const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-              const sourceNode = ctx.createBufferSource();
-              sourceNode.buffer = audioBuffer;
-              sourceNode.connect(ctx.destination);
-              sourceNode.addEventListener('ended', () => sourcesRef.current.delete(sourceNode));
-              sourceNode.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += audioBuffer.duration;
-              sourcesRef.current.add(sourceNode);
+            // Handle audio output
+            const parts = message.serverContent?.modelTurn?.parts || [];
+            for (const part of parts) {
+              const base64Audio = part.inlineData?.data;
+              if (base64Audio) {
+                const ctx = outputContextRef.current!;
+                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+                
+                const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+                const sourceNode = ctx.createBufferSource();
+                sourceNode.buffer = audioBuffer;
+                sourceNode.connect(ctx.destination);
+                sourceNode.addEventListener('ended', () => sourcesRef.current.delete(sourceNode));
+                sourceNode.start(nextStartTimeRef.current);
+                nextStartTimeRef.current += audioBuffer.duration;
+                sourcesRef.current.add(sourceNode);
+              }
             }
 
+            // Handle interruptions
             if (message.serverContent?.interrupted) {
-              sourcesRef.current.forEach(s => s.stop());
+              sourcesRef.current.forEach(s => {
+                try { s.stop(); } catch(e) {}
+              });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
             }
           },
-          onerror: (e) => {
+          onerror: (e: any) => {
             console.error('Session error', e);
-            setStatus('Error');
+            const errorMsg = e.message || 'Network error';
+            setStatus(`Error: ${errorMsg}`);
+            
+            if (errorMsg.includes("Requested entity was not found")) {
+              window.aistudio?.openSelectKey();
+            }
+            
+            setIsActive(false);
           },
           onclose: () => {
             setIsActive(false);
@@ -98,22 +127,28 @@ const LiveVoiceTool: React.FC = () => {
       });
 
       sessionPromiseRef.current = sessionPromise;
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setStatus('Failed to Start');
+      setStatus(`Failed: ${err.message || 'Unknown error'}`);
     }
   };
 
   const stopSession = () => {
     if (sessionPromiseRef.current) {
-      sessionPromiseRef.current.then(s => s.close());
+      sessionPromiseRef.current.then(s => s.close()).catch(() => {});
+      sessionPromiseRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
     }
     setIsActive(false);
     setStatus('Standby');
   };
+
+  useEffect(() => {
+    return () => stopSession();
+  }, []);
 
   return (
     <div className="h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-gray-950 to-gray-900">
@@ -133,13 +168,13 @@ const LiveVoiceTool: React.FC = () => {
       </div>
 
       <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold mb-2">Gemini Live</h2>
-        <p className={`text-sm font-medium ${isActive ? 'text-blue-400' : 'text-gray-500'}`}>
+        <h2 className="text-3xl font-bold mb-2">Vedviarn Live</h2>
+        <p className={`text-sm font-medium ${isActive ? 'text-blue-400' : status.includes('Error') ? 'text-red-400' : 'text-gray-500'}`}>
           {status}
         </p>
       </div>
 
-      <div className="w-full max-w-md bg-gray-900/50 border border-gray-800 rounded-2xl p-4 h-48 overflow-y-auto mb-8 space-y-2">
+      <div className="w-full max-w-md bg-gray-900/50 border border-gray-800 rounded-2xl p-4 h-48 overflow-y-auto mb-8 space-y-2 custom-scrollbar">
         {transcriptions.length === 0 ? (
           <p className="text-gray-600 text-xs text-center mt-16 italic">Transcription history will appear here...</p>
         ) : (
@@ -152,20 +187,22 @@ const LiveVoiceTool: React.FC = () => {
         )}
       </div>
 
-      <button
-        onClick={isActive ? stopSession : startSession}
-        className={`px-12 py-4 rounded-full font-bold text-lg transition-all shadow-xl ${
-          isActive 
-            ? 'bg-red-600 hover:bg-red-500 shadow-red-600/20' 
-            : 'bg-blue-600 hover:bg-blue-500 shadow-blue-600/20'
-        }`}
-      >
-        {isActive ? 'End Conversation' : 'Start Talking'}
-      </button>
+      <div className="flex gap-4">
+        <button
+          onClick={isActive ? stopSession : startSession}
+          className={`px-12 py-4 rounded-full font-bold text-lg transition-all shadow-xl ${
+            isActive 
+              ? 'bg-red-600 hover:bg-red-500 shadow-red-600/20' 
+              : 'bg-blue-600 hover:bg-blue-500 shadow-blue-600/20'
+          }`}
+        >
+          {isActive ? 'End Conversation' : 'Start Talking'}
+        </button>
+      </div>
 
       <p className="mt-8 text-xs text-gray-600 max-w-sm text-center">
-        Real-time audio session uses Gemini 2.5 Flash Native Audio. 
-        Ensure your microphone is enabled.
+        Real-time audio session powered by Gemini 2.5 Flash. 
+        Ensure your microphone is enabled and an API key is selected.
       </p>
     </div>
   );

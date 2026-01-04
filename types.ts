@@ -1,5 +1,5 @@
 
-export type ToolType = 'chat' | 'image' | 'video' | 'voice' | 'analyze' | 'tts';
+export type ToolType = 'chat' | 'image' | 'video' | 'voice' | 'analyze' | 'tts' | 'subscription' | 'game';
 
 export interface ChatMessage {
   id: string;

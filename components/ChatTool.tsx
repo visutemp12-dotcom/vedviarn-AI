@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { geminiService } from '../geminiService';
 import { ChatMessage } from '../types';
+import { isLimitReached, incrementUsage, LIMITS } from '../utils/usage';
 
 const ChatTool: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -11,6 +12,7 @@ const ChatTool: React.FC = () => {
   const [useMaps, setUseMaps] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [fastMode, setFastMode] = useState(false);
+  const [isOverLimit, setIsOverLimit] = useState(isLimitReached('chat'));
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -19,8 +21,19 @@ const ChatTool: React.FC = () => {
     }
   }, [messages, isLoading]);
 
+  useEffect(() => {
+    const checkLimit = () => setIsOverLimit(isLimitReached('chat'));
+    window.addEventListener('usageUpdated', checkLimit);
+    return () => window.removeEventListener('usageUpdated', checkLimit);
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
+
+    if (isLimitReached('chat')) {
+      setIsOverLimit(true);
+      return;
+    }
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -44,7 +57,8 @@ const ChatTool: React.FC = () => {
         }
       }
 
-      const model = fastMode ? 'gemini-2.5-flash-lite' : (thinking ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview');
+      // Fix: Use correct model name for lite mode
+      const model = fastMode ? 'gemini-flash-lite-latest' : (thinking ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview');
       
       const response = await geminiService.chat({
         message: input,
@@ -65,15 +79,23 @@ const ChatTool: React.FC = () => {
       };
 
       setMessages(prev => [...prev, assistantMsg]);
-    } catch (error) {
+      incrementUsage('chat');
+    } catch (error: any) {
       console.error(error);
-      const errorMsg: ChatMessage = {
+      const is404 = error.message?.includes("Requested entity was not found");
+      const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: "Sorry, I encountered an error. Please check your connection or API key.",
+        content: is404 
+          ? "System Authorization Error: The requested model entity was not found. This usually means your current API key doesn't have permissions for this specific model or region. Please select a paid AI Studio key."
+          : "Sorry, I encountered an error. Please check your connection or API key.",
         timestamp: new Date()
       };
-      setMessages(prev => [...prev, errorMsg]);
+      setMessages(prev => [...prev, assistantMsg]);
+      
+      if (is404 && window.aistudio) {
+        await window.aistudio.openSelectKey();
+      }
     } finally {
       setIsLoading(false);
     }
@@ -88,7 +110,7 @@ const ChatTool: React.FC = () => {
               <i className="fa-solid fa-sparkles text-blue-500 text-2xl"></i>
             </div>
             <div>
-              <h2 className="text-xl font-bold">Welcome to Vedviarn Chat</h2>
+              <h2 className="text-xl font-bold">Welcome to Vedviarn AI</h2>
               <p className="text-gray-400 max-w-xs mt-2">I'm a powerful assistant capable of reasoning, searching the web, and navigating maps.</p>
             </div>
           </div>
@@ -145,36 +167,50 @@ const ChatTool: React.FC = () => {
       </div>
 
       <div className="sticky bottom-0 bg-gray-950/80 backdrop-blur-sm pt-2 pb-4">
+        {isOverLimit && (
+          <div className="mb-4 p-4 bg-red-900/20 border border-red-500/30 rounded-2xl flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <i className="fa-solid fa-circle-exclamation text-red-400"></i>
+              <p className="text-xs text-red-200">You've reached your free daily limit of {LIMITS.chat} messages.</p>
+            </div>
+            <button className="text-[10px] font-bold text-white bg-red-500 px-3 py-1.5 rounded-lg uppercase">Upgrade</button>
+          </div>
+        )}
+
         <div className="flex flex-wrap gap-2 mb-3">
           <button 
+            disabled={isOverLimit}
             onClick={() => {setUseSearch(!useSearch); setUseMaps(false); setFastMode(false);}}
             className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-2 ${
               useSearch ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'
-            }`}
+            } disabled:opacity-30`}
           >
             <i className="fa-solid fa-magnifying-glass text-[10px]"></i> Google Search
           </button>
           <button 
+            disabled={isOverLimit}
             onClick={() => {setUseMaps(!useMaps); setUseSearch(false); setFastMode(false);}}
             className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-2 ${
               useMaps ? 'bg-green-600 border-green-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'
-            }`}
+            } disabled:opacity-30`}
           >
             <i className="fa-solid fa-location-dot text-[10px]"></i> Google Maps
           </button>
           <button 
+            disabled={isOverLimit}
             onClick={() => {setThinking(!thinking); setFastMode(false);}}
             className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-2 ${
               thinking ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'
-            }`}
+            } disabled:opacity-30`}
           >
             <i className="fa-solid fa-brain text-[10px]"></i> Deep Thinking
           </button>
           <button 
+            disabled={isOverLimit}
             onClick={() => {setFastMode(!fastMode); setThinking(false); setUseSearch(false); setUseMaps(false);}}
             className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-2 ${
               fastMode ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'
-            }`}
+            } disabled:opacity-30`}
           >
             <i className="fa-solid fa-bolt text-[10px]"></i> Fast Mode
           </button>
@@ -183,6 +219,7 @@ const ChatTool: React.FC = () => {
         <div className="relative group">
           <textarea
             value={input}
+            disabled={isOverLimit}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -190,13 +227,13 @@ const ChatTool: React.FC = () => {
                 handleSend();
               }
             }}
-            placeholder="Type your message..."
-            className="w-full bg-gray-900 border border-gray-800 rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none max-h-40 min-h-[60px]"
+            placeholder={isOverLimit ? "Limit reached. Come back tomorrow!" : "Type your message..."}
+            className={`w-full bg-gray-900 border border-gray-800 rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none max-h-40 min-h-[60px] ${isOverLimit ? 'opacity-50 cursor-not-allowed' : ''}`}
             rows={1}
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim() || isLoading}
+            disabled={!input.trim() || isLoading || isOverLimit}
             className="absolute right-3 bottom-3 w-10 h-10 bg-blue-600 hover:bg-blue-500 text-white rounded-xl flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-500/20"
           >
             <i className="fa-solid fa-paper-plane"></i>
