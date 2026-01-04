@@ -1,0 +1,9 @@
+{
+  "name": " Vedviarn AI",
+  "description": "An all-in-one AI powerhouse featuring image/video generation, real-time voice conversations, search/map grounding, and advanced multi-modal analysis powered by the latest Gemini models.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
